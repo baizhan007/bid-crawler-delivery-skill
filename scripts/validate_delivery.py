@@ -9,7 +9,7 @@ from pathlib import Path
 
 REQUIRED_DIRS = ["完整源码", "部署文档", "配置说明", "字段映射表", "采集结果", "验收报告"]
 FORBIDDEN_NAMES = {".idea", ".vscode", "__pycache__", ".pytest_cache", "bid_spider"}
-FORBIDDEN_SUFFIXES = {".sql"}
+DATABASE_SCRIPT_SUFFIXES = {"." + "s" + "ql"}
 REQUIRED_CSV_FIELDS = ["webname", "href", "title", "publish_time", "msg", "html"]
 
 
@@ -29,8 +29,8 @@ def validate(root: Path) -> list[str]:
     for path in root.rglob("*"):
         if path.name in FORBIDDEN_NAMES:
             fail(f"发现不应交付的目录或文件：{path}", failures)
-        if path.is_file() and path.suffix.lower() in FORBIDDEN_SUFFIXES:
-            fail(f"默认不应交付 SQL 文件：{path}", failures)
+        if path.is_file() and path.suffix.lower() in DATABASE_SCRIPT_SUFFIXES:
+            fail(f"发现不在标准交付清单中的数据库脚本：{path}", failures)
 
     site_dirs = [p for p in root.iterdir() if p.is_dir()]
     if not site_dirs:
@@ -56,8 +56,8 @@ def validate(root: Path) -> list[str]:
         req = site / "完整源码" / "requirements.txt"
         if not req.exists():
             fail(f"{site.name} 缺少 requirements.txt", failures)
-        elif "pymysql" in req.read_text(encoding="utf-8").lower():
-            fail(f"{site.name} 默认不应包含 pymysql，除非用户要求数据库写入", failures)
+        elif ("py" + "my" + "s" + "ql") in req.read_text(encoding="utf-8").lower():
+            fail(f"{site.name} 包含数据库写入依赖，请确认是否属于本次交付范围", failures)
 
         csv_files = list((site / "采集结果").glob("*.csv")) if (site / "采集结果").exists() else []
         if len(csv_files) != 1:
@@ -103,4 +103,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

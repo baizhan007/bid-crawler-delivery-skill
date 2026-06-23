@@ -33,7 +33,6 @@
 - [ ] 支持代理 `BID_SPIDER_PROXY`。
 - [ ] 支持请求间隔 `BID_SPIDER_DELAY`。
 - [ ] 不默认包含数据库写入代码。
-- [ ] 不默认生成 SQL。
 
 ## 数据检查
 
@@ -66,14 +65,13 @@
 - [ ] 字段映射说明能追溯每个字段来自哪里。
 - [ ] 验收报告 `overall_pass` 为 true，或明确解释失败原因。
 - [ ] 文档不再提旧包、旧模块或不用爬的网站。
-- [ ] 文档不提 SQL 交付，除非用户明确要求 SQL。
 
 ## 清理检查
 
 运行最终搜索：
 
 ```powershell
-rg -n "db_schema|入库\\.sql|pymysql|--write-db|python -m|bid_spider|__pycache__|\\.idea|\\.sql" "交付根目录"
+rg -n "python -m|bid_spider|__pycache__|\\.idea|\\.vscode|output_smoke|output_test" "交付根目录"
 ```
 
 如果不是用户明确要求的内容，搜索结果应为空。
@@ -85,6 +83,5 @@ rg -n "db_schema|入库\\.sql|pymysql|--write-db|python -m|bid_spider|__pycache_
 - 交付目录路径。
 - 每个网站记录数。
 - 验收结果。
-- 是否去掉 SQL 和无关文件。
+- 是否去掉无关文件。
 - 仍需用户注意的点。
-

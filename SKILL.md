@@ -35,7 +35,7 @@ Use this default structure:
     └── ...
 ```
 
-Do not include process debris in the final delivery folder: no `.idea`, `.vscode`, `__pycache__`, scratch output, old module directories, unused websites, or SQL files unless the user explicitly asks for SQL delivery.
+Do not include process debris in the final delivery folder: no `.idea`, `.vscode`, `__pycache__`, scratch output, old module directories, unused websites, or files that are not part of the agreed client delivery.
 
 ## Default Acceptance Contract
 
@@ -48,7 +48,7 @@ Unless the user gives a different standard, align the output with this target ta
 - `publish_time`: 发布日期，标准格式 `YYYY-MM-DD`。
 - Optional helper fields: `title`, `category`, `project_name`, `project_code`, `purchaser`, `supplier`, `amount`, `raw_id`, `source_site`, `extra`.
 
-The actual data deliverable is CSV by default. The database table is a field/uniqueness standard, not a requirement to generate `.sql` files. If the user asks for SQL later, add it as an optional extra and document it clearly.
+The actual data deliverable is CSV by default. The database table is a field and uniqueness standard for checking whether the CSV can be mapped downstream.
 
 Acceptance checks should cover:
 
@@ -102,7 +102,7 @@ The file should include:
 - acceptance report builder,
 - command-line `main()`.
 
-Do not write database connection code by default. Do not add `pymysql` unless SQL/database writing is explicitly requested.
+Keep the source focused on collection, normalization, CSV output, field mapping, and acceptance reporting unless the user asks for a wider runtime.
 
 Read `references/single_file_crawler_guide.md` before writing a crawler. Use `templates/single_site_crawler_template.py` as the starting skeleton when building a new site.
 
@@ -124,7 +124,7 @@ Before telling the user the package is ready:
 
 - List final files and directories.
 - Search final folder for forbidden leftovers.
-- Confirm no `.sql` files unless requested.
+- Confirm the final folder contains only the agreed delivery files.
 - Confirm no out-of-scope website names.
 - Confirm each site has the four required folders.
 - Confirm each `完整源码` has exactly one main `*_爬虫.py` plus `requirements.txt`.
@@ -141,4 +141,3 @@ python scripts/validate_delivery.py "交付根目录"
 ## When the User Is Anxious About Files
 
 Be explicit and calm. Explain which files are required and which are extras. If they say a file should not be there, remove it from the final delivery package unless it is truly required by the stated acceptance standard. The client-facing folder should be clean, boring, and easy to defend.
-

@@ -6,7 +6,7 @@
 - 每个网站独立项目。
 - 默认单文件 Python 爬虫。
 - 中文注释和中文交付文档。
-- 默认 CSV 交付，不默认 SQL 交付。
+- 默认以 CSV 作为数据交付物。
 - 支持增量和断点采集。
 - 最终目录必须干净。
 
@@ -21,4 +21,3 @@ python -m py_compile templates/single_site_crawler_template.py scripts/scaffold_
 ```powershell
 python scripts/validate_delivery.py "交付根目录"
 ```
-
