@@ -28,7 +28,8 @@ Use this default structure:
 │   │   ├── field_mapping.csv
 │   │   └── 字段映射说明.md
 │   ├── 采集结果/
-│   │   └── 网站A.csv
+│   │   ├── 1、采购公告.csv
+│   │   └── 2、结果公告.csv
 │   └── 验收报告/
 │       └── acceptance_report.json
 └── 网站B/
@@ -72,17 +73,20 @@ Acceptance checks should cover:
    - pagination,
    - date filters,
    - anti-scraping controls.
-4. Prefer public frontend JSON/API calls over brittle visual scraping when possible.
-5. Build a small probe first: one board, one page, one detail.
-6. Expand to all requested boards and the target date range.
-7. Normalize records into the shared CSV fields.
-8. Implement incremental collection:
+4. Identify procurement-related candidate categories/boards that can be determined from the site. Do not limit this to known sites; use the current website's navigation, dictionaries, APIs, and visible boards.
+5. Before full collection, report the candidate category list to the user and ask which ones should be crawled. Proceed after the user confirms or edits the list.
+6. Prefer public frontend JSON/API calls over brittle visual scraping when possible.
+7. Build a small probe first: one board, one page, one detail.
+8. Expand to confirmed boards and the target date range.
+9. Normalize records into the shared CSV fields.
+10. Write one CSV per confirmed category that has data, named `序号、栏目名.csv`. Do not generate empty CSV files for confirmed categories with zero records.
+11. Implement incremental collection:
    - keep a state JSON file,
    - remember latest publish date,
    - remember seen `href` and `raw_id`,
    - stop when repeated seen records indicate the previous collection boundary.
-9. Generate delivery files per website.
-10. Run verification and clean the final folder.
+12. Generate delivery files per website.
+13. Run verification and clean the final folder.
 
 ## Source Code Rules
 
@@ -98,6 +102,7 @@ The file should include:
 - HTML/text cleaning helpers,
 - date normalization,
 - CSV writer,
+- category CSV writer,
 - field mapping writer,
 - acceptance report builder,
 - command-line `main()`.
@@ -114,6 +119,7 @@ For every website project, write:
 - `配置说明/配置说明.md`: proxy env var, request delay env var, state file path, board/API parameter locations.
 - `字段映射表/field_mapping.csv`: source-to-output field mapping.
 - `字段映射表/字段映射说明.md`: plain-language mapping against acceptance fields.
+- `采集结果/序号、栏目名.csv`: one data CSV per confirmed procurement-related category with records.
 - `验收报告/acceptance_report.json`: machine-readable quality report.
 
 Read `references/delivery_structure.md` and `references/acceptance_checklist.md` before final packaging.

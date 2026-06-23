@@ -421,6 +421,36 @@ def write_csv(path: Path, records: list[BidRecord]) -> None:
         for record in records:
             writer.writerow(record.to_row())
 
+def safe_filename(value: str) -> str:
+    """清理 Windows 文件名不允许的字符。"""
+
+    return re.sub(r'[\\/:*?"<>|]', "_", clean_space(value) or "未分类")
+
+
+def record_group(record: BidRecord) -> str:
+    """取得用于拆分 CSV 的采购相关栏目。"""
+
+    return clean_space(record.category) or "未分类"
+
+
+def write_category_csvs(out_dir: Path, records: list[BidRecord], order: list[str]) -> list[dict]:
+    """按栏目拆分输出 CSV；空栏目不生成文件。"""
+
+    grouped: dict[str, list[BidRecord]] = defaultdict(list)
+    for record in records:
+        grouped[record_group(record)].append(record)
+    summary = []
+    index = 1
+    for category in order + sorted(cat for cat in grouped if cat not in order):
+        rows = grouped.get(category, [])
+        if not rows:
+            continue
+        filename = f"{index}、{safe_filename(category)}.csv"
+        write_csv(out_dir / filename, rows)
+        summary.append({"category": category, "filename": filename, "count": len(rows)})
+        index += 1
+    return summary
+
 
 def write_field_mapping(path: Path) -> None:
     """写出字段映射表，说明 CSV 字段与源网页/接口字段的关系。"""
@@ -542,7 +572,7 @@ def main() -> None:
     records = dedupe(records)
 
     out_dir = Path(args.output_dir)
-    write_csv(out_dir / "bid_records.csv", records)
+    write_category_csvs(out_dir, records, [source["name"] for source in spider.sources()])
     write_field_mapping(out_dir / "field_mapping.csv")
     report_stats = [] if args.incremental else spider.stats
     report = build_report(records, report_stats, start.isoformat(), end.isoformat())
@@ -556,4 +586,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

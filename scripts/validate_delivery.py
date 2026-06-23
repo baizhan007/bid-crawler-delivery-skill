@@ -60,9 +60,11 @@ def validate(root: Path) -> list[str]:
             fail(f"{site.name} 包含数据库写入依赖，请确认是否属于本次交付范围", failures)
 
         csv_files = list((site / "采集结果").glob("*.csv")) if (site / "采集结果").exists() else []
-        if len(csv_files) != 1:
-            fail(f"{site.name} 的采集结果中应有且只有一个 CSV，实际 {len(csv_files)} 个", failures)
+        if not csv_files:
+            fail(f"{site.name} 的采集结果中没有 CSV", failures)
         for csv_file in csv_files:
+            if not csv_file.name.startswith(tuple(f"{i}、" for i in range(1, 100))):
+                fail(f"{csv_file} 文件名应使用 `序号、栏目名.csv` 格式", failures)
             with csv_file.open("r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 missing = [field for field in REQUIRED_CSV_FIELDS if field not in (reader.fieldnames or [])]

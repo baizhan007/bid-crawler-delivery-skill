@@ -63,7 +63,7 @@ python "{site_name}_爬虫.py" --incremental --days 30 --output-dir output_incre
 
 ## 输出说明
 
-- `采集结果/{site_name}.csv`：最终交付 CSV。
+- `采集结果/序号、栏目名.csv`：按确认采集且有数据的栏目输出 CSV。
 - `字段映射表/field_mapping.csv`：字段映射。
 - `验收报告/acceptance_report.json`：验收报告。
 """,
@@ -103,7 +103,7 @@ $env:BID_SPIDER_PROXY = "http://127.0.0.1:7890"
 
 本文件用于说明 CSV 字段与源网页/接口字段的对应关系。开发完成后补齐每个字段来源。
 
-默认数据交付物为 CSV，开发完成后补齐每个字段来源。
+采集结果按确认采集且有数据的采购相关栏目拆分，文件名格式为 `序号、栏目名.csv`。
 """,
     )
 
