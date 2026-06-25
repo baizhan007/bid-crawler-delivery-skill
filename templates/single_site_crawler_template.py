@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import html as html_lib
 import json
 import os
@@ -22,7 +23,7 @@ SITE_KEY = "example_site"
 WEBNAME = "示例招投标网站"
 BASE_URL = "https://example.com"
 
-CSV_FIELDS = [
+SAMPLE_FIELDS = [
     "webname",
     "href",
     "title",
@@ -40,10 +41,22 @@ CSV_FIELDS = [
     "extra",
 ]
 
+DB_FIELDS = [
+    "webname",
+    "href",
+    "msg",
+    "html",
+    "publish_time",
+    "industry",
+    "from_auto_script",
+    "identify_code",
+    "etl_flag",
+]
+
 
 @dataclass
 class BidRecord:
-    """统一标讯记录结构，对应 CSV 输出字段和验收表结构字段。"""
+    """统一标讯记录结构，对应样本 CSV 字段和入库字段。"""
 
     webname: str
     href: str
@@ -68,11 +81,12 @@ class BidRecord:
         self.project_name = clean_space(self.project_name or self.title)
         self.msg = clean_space(self.msg)
         self.publish_time = normalize_date(self.publish_time)
+        self.href = normalize_href(self.href, BASE_URL)
         self.html = keep_table_html(self.html or self.msg or self.title)
         return self
 
-    def to_row(self) -> dict[str, Any]:
-        """转换为 CSV 行。"""
+    def to_sample_row(self) -> dict[str, Any]:
+        """转换为样本 CSV 行。"""
 
         row = asdict(self)
         row["extra"] = json.dumps(self.extra or {}, ensure_ascii=False, sort_keys=True)
@@ -213,6 +227,7 @@ class ExampleBidSpider:
         end_date: date,
         max_pages: int | None = None,
         limit: int | None = None,
+        limit_per_category: int | None = None,
     ) -> Iterable[BidRecord]:
         """采集全部目标栏目，并逐条返回标准记录。"""
 
@@ -222,6 +237,7 @@ class ExampleBidSpider:
             stat = {"webname": WEBNAME, "source": source["name"], "expected": 0, "fetched": 0}
             self.stats.append(stat)
             page = 1
+            category_count = 0
             while True:
                 items, total_pages = self.fetch_page(source, page)
                 if not items:
@@ -243,8 +259,12 @@ class ExampleBidSpider:
                     stat["fetched"] += 1
                     yield record
                     count += 1
+                    category_count += 1
                     if limit and count >= limit:
                         return
+                    if limit_per_category and category_count >= limit_per_category:
+                        stop_by_date = True
+                        break
                 if stop_by_date or (max_pages and page >= max_pages) or page >= total_pages:
                     break
                 page += 1
@@ -324,6 +344,22 @@ def clean_space(value: Any) -> str:
     if value is None:
         return ""
     return " ".join(str(value).replace("\u3000", " ").split())
+
+
+def normalize_href(value: Any, base_url: str) -> str:
+    """把源站链接规范为浏览器可打开的绝对 URL。"""
+
+    text = html_lib.unescape("" if value is None else str(value)).strip()
+    text = text.replace("\r", "").replace("\n", "").replace(" ", "")
+    if not text:
+        return ""
+    return urljoin(base_url.rstrip("/") + "/", text)
+
+
+def is_http_url(value: str) -> bool:
+    """判断链接是否为完整 http/https URL。"""
+
+    return bool(re.match(r"^https?://", value or "", flags=re.I))
 
 
 def normalize_date(value: Any) -> str:
@@ -411,15 +447,86 @@ def extract_meta_fields(text: str) -> dict[str, str]:
     }
 
 
-def write_csv(path: Path, records: list[BidRecord]) -> None:
-    """写出 UTF-8-SIG CSV，方便 Excel 直接打开。"""
+class MysqlWriter:
+    """将采集记录写入 a_bidcollect_info。"""
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        """初始化数据库连接和写入 SQL。"""
+
+        if not args.db_user or not args.db_name:
+            raise RuntimeError("启用 --to-db 时必须提供 --db-user 和 --db-name，或配置 BID_DB_USER/BID_DB_NAME。")
+        try:
+            import pymysql  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("启用 --to-db 需要安装 pymysql：pip install pymysql") from exc
+        placeholders = ", ".join(["%s"] * len(DB_FIELDS))
+        columns = ", ".join(f"`{field}`" for field in DB_FIELDS)
+        table = f"`{args.db_table}`"
+        if args.db_skip_existing:
+            self.sql = f"INSERT IGNORE INTO {table} ({columns}) VALUES ({placeholders})"
+        else:
+            updates = ", ".join(
+                f"`{field}`=VALUES(`{field}`)"
+                for field in ["msg", "html", "publish_time", "industry", "from_auto_script", "identify_code", "etl_flag"]
+            )
+            self.sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}"
+        self.conn = pymysql.connect(
+            host=args.db_host,
+            port=args.db_port,
+            user=args.db_user,
+            password=args.db_password,
+            database=args.db_name,
+            charset="utf8mb4",
+            autocommit=False,
+        )
+        self.count = 0
+
+    def write_many(self, records: list[BidRecord]) -> None:
+        """批量写入数据库。"""
+
+        if not records:
+            return
+        values = [[db_row_from_record(record).get(field) for field in DB_FIELDS] for record in records]
+        with self.conn.cursor() as cursor:
+            cursor.executemany(self.sql, values)
+        self.count += len(records)
+        self.conn.commit()
+
+    def close(self) -> None:
+        """提交并关闭数据库连接。"""
+
+        self.conn.commit()
+        self.conn.close()
+
+
+def db_row_from_record(record: BidRecord) -> dict[str, Any]:
+    """把标准记录映射为 a_bidcollect_info 可写字段。"""
+
+    href = normalize_href(record.href, BASE_URL)
+    webname = clean_space(record.webname or WEBNAME)
+    identify = hashlib.sha256(f"{webname}|{href}".encode("utf-8")).hexdigest()[:32]
+    return {
+        "webname": webname,
+        "href": href,
+        "msg": clean_space(record.msg or record.title),
+        "html": record.html or "",
+        "publish_time": normalize_date(record.publish_time) or None,
+        "industry": clean_space(record.category) or None,
+        "from_auto_script": 1,
+        "identify_code": identify,
+        "etl_flag": 0,
+    }
+
+
+def write_sample_csv(path: Path, records: list[BidRecord], sample_size: int) -> None:
+    """写出少量 UTF-8-SIG 样本 CSV，用于验收抽查。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer = csv.DictWriter(f, fieldnames=SAMPLE_FIELDS)
         writer.writeheader()
-        for record in records:
-            writer.writerow(record.to_row())
+        for record in records[:sample_size]:
+            writer.writerow(record.to_sample_row())
 
 def safe_filename(value: str) -> str:
     """清理 Windows 文件名不允许的字符。"""
@@ -433,8 +540,8 @@ def record_group(record: BidRecord) -> str:
     return clean_space(record.category) or "未分类"
 
 
-def write_category_csvs(out_dir: Path, records: list[BidRecord], order: list[str]) -> list[dict]:
-    """按栏目拆分输出 CSV；空栏目不生成文件。"""
+def write_sample_csv_by_category(out_dir: Path, records: list[BidRecord], order: list[str], sample_size: int) -> list[dict]:
+    """按栏目输出少量样本 CSV；空栏目不生成文件。"""
 
     grouped: dict[str, list[BidRecord]] = defaultdict(list)
     for record in records:
@@ -445,25 +552,28 @@ def write_category_csvs(out_dir: Path, records: list[BidRecord], order: list[str
         rows = grouped.get(category, [])
         if not rows:
             continue
-        filename = f"{index}、{safe_filename(category)}.csv"
-        write_csv(out_dir / filename, rows)
-        summary.append({"category": category, "filename": filename, "count": len(rows)})
+        sample_rows = rows[:sample_size]
+        filename = f"{index}、{safe_filename(category)}_sample.csv"
+        write_sample_csv(out_dir / filename, sample_rows, sample_size)
+        summary.append({"category": category, "filename": filename, "sample_count": len(sample_rows), "total_seen": len(rows)})
         index += 1
     return summary
 
 
 def write_field_mapping(path: Path) -> None:
-    """写出字段映射表，说明 CSV 字段与源网页/接口字段的关系。"""
+    """写出字段映射表，说明入库字段与源网页/接口字段的关系。"""
 
     rows = [
         ("webname", "站点配置 WEBNAME", "网站名称"),
-        ("href", "详情页 URL 或 build_href()", "详情页 URL，和 webname 组成唯一键"),
-        ("title", "列表/详情标题字段", "公告标题"),
+        ("href", "详情页 URL 或 build_href()", "浏览器可打开详情页 URL，和 webname 组成唯一键"),
         ("publish_time", "列表/详情发布时间字段", "发布日期，YYYY-MM-DD"),
         ("msg", "详情正文 HTML 清洗文本", "纯文本正文"),
         ("html", "详情正文 HTML/content 字段", "正文 HTML，仅保留 table 结构"),
-        ("raw_id", "源站 ID", "唯一标识参考字段"),
-        ("extra", "列表/详情原始字段", "保留原始字段，便于排错和补采"),
+        ("industry", "栏目 category", "行业或栏目分类，可由下游覆盖"),
+        ("from_auto_script", "脚本默认值 1", "来源标记"),
+        ("identify_code", "sha256(webname|href)[:32]", "稳定唯一标识"),
+        ("etl_flag", "脚本默认值 0", "ETL 处理标记"),
+        ("title/category/raw_id/extra", "列表/详情原始字段", "仅用于样本 CSV 和排错，不写入正式库"),
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -472,13 +582,13 @@ def write_field_mapping(path: Path) -> None:
         writer.writerows(rows)
 
 
-def build_report(records: list[BidRecord], source_stats: list[dict], start_date: str, end_date: str) -> dict:
-    """生成验收报告，检查完整率、重复、日期范围和链接可追溯。"""
+def build_report(records: list[BidRecord], source_stats: list[dict], start_date: str, end_date: str, args: argparse.Namespace) -> dict:
+    """生成验收报告，检查完整率、重复、日期范围、链接和入库能力。"""
 
     total = len(records)
     keys = [(r.webname, r.href) for r in records]
     duplicate_records = total - len(set(keys))
-    required = ["webname", "href", "title", "msg", "html", "publish_time"]
+    required = ["webname", "href", "msg", "html", "publish_time"]
     rates = {
         field: round(sum(1 for r in records if getattr(r, field, "")) / total, 4) if total else 0
         for field in required
@@ -504,7 +614,8 @@ def build_report(records: list[BidRecord], source_stats: list[dict], start_date:
         "required_fields_ge_99_5_percent": all(rate >= 0.995 for rate in rates.values()) if total else False,
         "no_duplicates": duplicate_records == 0,
         "dates_in_range": all(start_date <= r.publish_time[:10] <= end_date for r in records if r.publish_time),
-        "links_traceable": all(r.href.startswith(("http://", "https://")) for r in records),
+        "links_traceable": not href_bad,
+        "database_mode_supported": True,
     }
     flags["overall_pass"] = all(flags.values())
     return {
@@ -514,6 +625,22 @@ def build_report(records: list[BidRecord], source_stats: list[dict], start_date:
         "required_non_empty_rate": rates,
         "source_coverage": coverage,
         "site_counts": {site: len(rows) for site, rows in by_site.items()},
+        "href_quality": {
+            "http_url_rate": round(sum(1 for r in records if is_http_url(r.href)) / total, 4) if total else 0,
+            "bad_samples": href_bad,
+        },
+        "database": {
+            "database_mode_supported": True,
+            "db_table": args.db_table,
+            "db_unique_key": "webname + href",
+            "db_write_fields": DB_FIELDS,
+            "to_db_enabled_this_run": bool(args.to_db),
+        },
+        "sample": {
+            "sample_only": True,
+            "sample_csv": args.sample_csv or "",
+            "sample_size": args.sample_size,
+        },
         "quality_flags": flags,
     }
 
@@ -546,12 +673,24 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
-    parser.add_argument("--output-dir", default="output_final")
+    parser.add_argument("--output-dir", default="验收输出")
+    parser.add_argument("--sample-csv", default="", help="写出单个样本 CSV，用于快速验收抽查")
+    parser.add_argument("--sample-dir", default="", help="按栏目写出样本 CSV 的目录")
+    parser.add_argument("--sample-size", type=int, default=20, help="每个样本 CSV 最多写出多少条")
     parser.add_argument("--max-pages", type=int)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--limit-per-category", type=int)
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--state-file", default="state/crawl_state.json")
     parser.add_argument("--incremental-stop-seen", type=int, default=3)
+    parser.add_argument("--to-db", action="store_true", help="启用 MySQL 直接入库，写入 a_bidcollect_info 表")
+    parser.add_argument("--db-host", default=os.getenv("BID_DB_HOST", "127.0.0.1"), help="数据库地址，默认读取 BID_DB_HOST")
+    parser.add_argument("--db-port", type=int, default=int(os.getenv("BID_DB_PORT", "3306")), help="数据库端口，默认读取 BID_DB_PORT")
+    parser.add_argument("--db-user", default=os.getenv("BID_DB_USER", ""), help="数据库用户名，默认读取 BID_DB_USER")
+    parser.add_argument("--db-password", default=os.getenv("BID_DB_PASSWORD", ""), help="数据库密码，默认读取 BID_DB_PASSWORD")
+    parser.add_argument("--db-name", default=os.getenv("BID_DB_NAME", ""), help="数据库名，默认读取 BID_DB_NAME")
+    parser.add_argument("--db-table", default=os.getenv("BID_DB_TABLE", "a_bidcollect_info"), help="入库表名，默认 a_bidcollect_info")
+    parser.add_argument("--db-skip-existing", action="store_true", help="遇到 webname + href 已存在时跳过，不覆盖更新")
     args = parser.parse_args()
 
     end = parse_date(args.end_date) if args.end_date else date.today()
@@ -561,7 +700,7 @@ def main() -> None:
     spider = ExampleBidSpider()
     records: list[BidRecord] = []
     seen_count = 0
-    for record in spider.crawl(crawl_start, end, max_pages=args.max_pages, limit=args.limit):
+    for record in spider.crawl(crawl_start, end, max_pages=args.max_pages, limit=args.limit, limit_per_category=args.limit_per_category):
         if args.incremental and state.is_seen(record):
             seen_count += 1
             if seen_count >= args.incremental_stop_seen:
@@ -572,17 +711,32 @@ def main() -> None:
     records = dedupe(records)
 
     out_dir = Path(args.output_dir)
-    write_category_csvs(out_dir, records, [source["name"] for source in spider.sources()])
+    if args.to_db:
+        db_writer = MysqlWriter(args)
+        try:
+            db_writer.write_many(records)
+        finally:
+            db_writer.close()
+        print(f"入库完成：{db_writer.count} 条 -> {args.db_table}")
+    if args.sample_csv:
+        write_sample_csv(Path(args.sample_csv), records, args.sample_size)
+    if args.sample_dir:
+        write_sample_csv_by_category(Path(args.sample_dir), records, [source["name"] for source in spider.sources()], args.sample_size)
     write_field_mapping(out_dir / "field_mapping.csv")
     report_stats = [] if args.incremental else spider.stats
-    report = build_report(records, report_stats, start.isoformat(), end.isoformat())
+    report = build_report(records, report_stats, start.isoformat(), end.isoformat(), args)
     (out_dir / "acceptance_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8-sig")
     state.update(records)
     state.save()
     if not args.incremental and not report["quality_flags"]["overall_pass"]:
         raise SystemExit("严格验收未通过，请查看 acceptance_report.json")
-    print(f"完成：{len(records)} 条 -> {out_dir}")
+    print(f"完成：{len(records)} 条；正式入库={'是' if args.to_db else '否'}；验收输出 -> {out_dir}")
 
 
 if __name__ == "__main__":
     main()
+    href_bad = [
+        {"href": r.href, "title": r.title}
+        for r in records
+        if not is_http_url(r.href)
+    ][:50]
