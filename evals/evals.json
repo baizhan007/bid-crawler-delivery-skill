@@ -3,23 +3,70 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "我现在要做一个新的招投标网站爬虫，要求和上次一样：每个网站独立项目，源码一个 py，中文注释，先告诉我你发现了哪些采购相关栏目让我确认，最后桌面给我完整交付文件夹，程序要直接写 a_bidcollect_info，支持增量采集。",
-      "expected_output": "应触发该 skill，先发现并反馈采购相关栏目，用户确认后产出独立网站项目结构、单文件 Python 爬虫、数据库入库配置、字段映射、部署文档、配置说明和验收报告。"
+      "prompt": "在当前 bid-crawler-delivery-skill 仓库中，只使用内置 bidfactory.mocksite 和临时目录，演示一个名为‘本地模拟采购网’的新站点完整流程。必须执行 new、capture、replay、validate；模拟站点含采购公告和结果公告两个栏目、分页、详情和旧记录。禁止访问公网或写生产数据库，最终把命令输出、fixture、records.json、validation.json 和 validation.html 保存到指定 outputs 目录。",
+      "expected_output": "得到可重复的本地录制、严格离线回放和重新计算的验收报告；两个栏目均有记录，旧记录不会导致后续栏目被跳过，fixture 不含敏感数据。",
+      "files": [],
+      "expectations": [
+        "所有 HTTP 请求只指向内置 mocksite 的 127.0.0.1 地址，没有公网访问。",
+        "new 生成独立站点项目、site_config.json、adapter.py、单文件爬虫和测试骨架。",
+        "fixture 的 manifest.json 使用 schema_version 1，包含两个栏目、正文相对路径和非空 entries。",
+        "fixture 文件中不存在 Cookie、Authorization、Token、密码或测试秘密的明文值。",
+        "replay 在网络禁用条件下仍生成 records.json，记录包含 webname、href、msg、html、publish_time。",
+        "validation.json 和 validation.html 均存在，指标来自 records，两个期望栏目均被覆盖。"
+      ]
     },
     {
       "id": 2,
-      "prompt": "这个网站近一个月没数据就不用爬，另外两个网站要分开，不能混成一个库写错。验收标准还是正文发布时间，完整率 99.5%，webname+href 不能重复，href 要复制到浏览器能打开。",
-      "expected_output": "应按范围排除无数据网站，只交付有数据的网站，且每站独立入库、校验 href 可打开、验收报告记录字段完整率和重复情况。"
+      "prompt": "在临时目录中基于内置 mocksite 各录制一份 v1 和破坏性 v2 fixture，然后运行 bidfactory diff。v2 会把 publish_time 改为 published_at、把详情 content 改为 body、改变 amount 类型，并让一个受监控 DOM selector 低于 min。不得修改 diff 报告或业务源码来制造结果；把 diff.json、diff.html 和实际退出码保存到 outputs。",
+      "expected_output": "差异工具准确报告 JSON 字段删除/新增/类型改变与 DOM selector 退化，将本次变化判为 breaking，并以退出码 1 提醒回归。",
+      "files": [],
+      "expectations": [
+        "diff.json 和 diff.html 同时生成，且内容对应同一次比较。",
+        "报告列出至少一个 removed_json_path、一个 added_json_path 或 json_type_change。",
+        "受监控 selector 从满足 min 变为低于 min，并出现在 breaking_selector_changes。",
+        "breaking 为 true，CLI 实际退出码为 1，而不是把预期告警误报为工具崩溃。",
+        "旧、新 fixture 均可独立加载，正文路径没有逃逸 fixture 根目录。"
+      ]
     },
     {
       "id": 3,
-      "prompt": "甲方说交付包里有些文件容易让人误会，你帮我检查桌面交付包，去掉无关文件、AI痕迹、批量转换脚本，源码别动坏，最终文件夹要干净。",
-      "expected_output": "应清理无关文件，保留入库源码、样本、文档、字段映射和验收报告，并确保交付结构清晰。"
+      "prompt": "创建一个完全本地的单站点项目，提供两条通过验收的不同栏目记录和一个可编译的 *_爬虫.py，然后执行 bidfactory package。检查生成的客户目录、ZIP 和 SHA-256 manifest。随后复制交付目录，在副本 acceptance_report.json 中伪造 sample_validation.total_records=999，再调用交付验证器。禁止通过删除样本或放宽校验来通过。",
+      "expected_output": "正常项目生成干净的一站一项目交付物；报告被篡改的副本明确失败，证明验收器会从 sample CSV 重算而非相信报告。",
+      "files": [],
+      "expectations": [
+        "正常交付根目录恰好包含一个站点目录和交付结构说明，站点目录包含六个规定子目录。",
+        "完整源码目录恰好包含一个 *_爬虫.py 和 requirements.txt，源码可编译且不产生 pyc。",
+        "验收样例不超过 20 条，acceptance_report 的 sample_validation 与样本重算结果一致。",
+        "ZIP 和 manifest 存在，manifest 为每个交付文件及 ZIP 提供 SHA-256 和字节数。",
+        "目录和 ZIP 均不含 .git、__pycache__、.pytest_cache、日志、调试脚本或硬编码秘密。",
+        "篡改后的副本被报告为 Acceptance sample report mismatch，不能仅靠伪造 true 或数字通过。"
+      ]
     },
     {
       "id": 4,
-      "prompt": "给这个电子卖场网站写爬虫，首页有卖场资讯，点查看更多还有公告公示，两个都要采。客户自己用源码跑入库，我们只需要少量样本 CSV 验证。",
-      "expected_output": "应检查可见栏目和查看更多栏目，生成中文注释单文件源码，支持直接入库和样本 CSV 验证，并按独立项目结构交付。"
+      "prompt": "用临时 records.json 做一次验收防伪测试：输入对象在真实 records 之外故意写入 quality_flags.overall_pass=true 和 duplicate_records=0，但 records 本身包含重复 webname+href、非法相对 href、非法日期和危险 HTML。运行 bidfactory validate，保留 JSON/HTML 报告和退出码；不得联网。",
+      "expected_output": "验收器忽略伪造结论并从原始 records 重算，准确给出重复、URL、日期和正文风险，overall_pass=false，退出码为 1。",
+      "files": [],
+      "expectations": [
+        "duplicate_records 根据 records 重算且大于 0，不等于输入伪造值。",
+        "bad_href_samples、bad_date_samples 和 dangerous_html_samples 均包含对应问题记录。",
+        "online_link_checks_enabled 为 false，执行过程中没有网络请求。",
+        "quality_flags.overall_pass 为 false，CLI 退出码为 1。",
+        "validation.json 与 validation.html 同时存在且不包含凭据。"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "在当前仓库运行 bidfactory doctor --json 和聚焦 pytest。测试中设置一个值为 DO_NOT_LEAK_VALUE_731 的 BIDFACTORY_TEST_TOKEN 环境变量，并对一个临时 Python 爬虫调用无副作用语法检查。把 doctor JSON 和 pytest 结果保存到 outputs，不访问网络。",
+      "expected_output": "doctor 能区分 error 与 warning，只暴露敏感环境变量名而不暴露值；语法检查不生成 __pycache__ 或 pyc，聚焦测试通过。",
+      "files": [],
+      "expectations": [
+        "doctor 输出不包含 DO_NOT_LEAK_VALUE_731，但指出 BIDFACTORY_TEST_TOKEN 已设置。",
+        "缺少 gh 等可选工具只产生 warning，不让 ok 变为 false。",
+        "Python、requests、模板和工作目录写权限等必需检查通过。",
+        "内存 compile 之后临时目录中不存在 __pycache__ 或 *.pyc。",
+        "tests/test_validation_diff_package.py 的相关测试实际运行并报告清晰结果。"
+      ]
     }
   ]
 }

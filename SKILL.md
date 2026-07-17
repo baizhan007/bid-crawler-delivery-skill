@@ -29,8 +29,10 @@ Use this default structure:
 │   │   └── 字段映射说明.md
 │   ├── 验收样例/
 │   │   └── sample_records.csv
-│   └── 验收报告/
+│   ├── 验收报告/
 │       └── acceptance_report.json
+│   └── 运行状态/
+│       └── crawl_state.json  # 成功持久化后生成，可不随初始交付包提供
 └── 网站B/
     └── ...
 ```
@@ -90,10 +92,11 @@ Acceptance checks should cover:
 10. Implement database ingestion as the formal output path.
 11. Generate only small sample CSV files for verification, controlled by `--sample-csv`, `--sample-size`, `--limit`, `--limit-per-category`, or `--max-pages`.
 12. Implement incremental collection:
-    - keep a state JSON file,
+    - keep a state JSON file at `运行状态/crawl_state.json` by default, outside `完整源码`,
     - remember latest publish date,
     - remember seen `href` and `raw_id`,
-    - stop when repeated seen records indicate the previous collection boundary.
+    - count consecutive seen records separately for each category,
+    - stop only the current category when its previous collection boundary is reached, then continue later categories.
 13. Generate delivery files per website.
 14. Run verification and clean the final folder.
 
@@ -137,6 +140,7 @@ For every website project, write:
 - `字段映射表/字段映射说明.md`: plain-language mapping against `a_bidcollect_info`.
 - `验收样例/sample_records.csv`: small sample only when useful for verification; do not treat it as the formal full data deliverable.
 - `验收报告/acceptance_report.json`: machine-readable quality report, including href quality and database mode flags.
+- `运行状态/crawl_state.json`: runtime checkpoint created only after records were written to the database or a sample output; keep it outside `完整源码`.
 
 ## Final Verification
 
@@ -148,12 +152,14 @@ Before telling the user the package is ready:
 - Confirm no out-of-scope website names.
 - Confirm each site has the required folders.
 - Confirm each `完整源码` has exactly one main `*_爬虫.py` plus `requirements.txt`.
+- Confirm syntax checking is performed in memory and does not create `__pycache__` inside the package.
 - Confirm there are no unrelated helper scripts such as batch converters, temporary tools, demos, tests, or debug outputs.
 - Compile each Python file or otherwise syntax-check it.
 - Confirm `--to-db`, database configuration, and duplicate handling are present.
 - Confirm `href` fields are complete browser-openable URLs.
 - Confirm sample CSV records, if generated, are only samples and not represented as the full formal deliverable.
 - Confirm acceptance flags pass or explain any failure plainly.
+- Recompute observable metrics from samples and numeric report evidence; never accept self-declared `overall_pass=true` alone.
 
 Use `scripts/validate_delivery.py` when available:
 

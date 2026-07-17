@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import shutil
+import hashlib
+import json
+import re
 from pathlib import Path
 
 
@@ -12,17 +14,56 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def validate_site_name(site_name: str) -> str:
+    """校验网站名称，避免路径穿越和 Windows 非法文件名。"""
+
+    site_name = site_name.strip()
+    if not site_name or site_name in {".", ".."}:
+        raise ValueError("网站名称不能为空或点路径。")
+    if Path(site_name).name != site_name or re.search(r'[\\/:*?"<>|]', site_name):
+        raise ValueError("网站名称不能包含路径分隔符或 Windows 非法字符。")
+    if site_name.endswith((" ", ".")):
+        raise ValueError("网站名称不能以空格或句点结尾。")
+    return site_name
+
+
+def render_template(template: Path, site_name: str) -> str:
+    """替换模板中的站点标识和网站名称常量。"""
+
+    text = template.read_text(encoding="utf-8")
+    site_key = f"site_{hashlib.sha256(site_name.encode('utf-8')).hexdigest()[:12]}"
+    replacements = {
+        'SITE_KEY = "example_site"': f"SITE_KEY = {json.dumps(site_key, ensure_ascii=False)}",
+        'WEBNAME = "示例招投标网站"': f"WEBNAME = {json.dumps(site_name, ensure_ascii=False)}",
+    }
+    for old, new in replacements.items():
+        if old not in text:
+            raise ValueError(f"模板缺少预期占位符：{old}")
+        text = text.replace(old, new, 1)
+    return text
+
+
 def scaffold(root: Path, site_name: str, template: Path) -> None:
     """生成一个符合入库交付规范的网站项目骨架。"""
 
+    site_name = validate_site_name(site_name)
     site_dir = root / site_name
+    if site_dir.exists():
+        raise FileExistsError(f"网站项目已存在，拒绝覆盖：{site_dir}")
     source_dir = site_dir / "完整源码"
     for name in ["完整源码", "部署文档", "配置说明", "字段映射表", "验收样例", "验收报告"]:
         (site_dir / name).mkdir(parents=True, exist_ok=True)
 
     script_path = source_dir / f"{site_name}_爬虫.py"
-    shutil.copyfile(template, script_path)
+    write_text(script_path, render_template(template, site_name))
     write_text(source_dir / "requirements.txt", "requests>=2.31.0\npymysql>=1.1.0\n")
+
+    structure_file = root / "交付结构说明.md"
+    if not structure_file.exists():
+        write_text(
+            structure_file,
+            "# 交付结构说明\n\n每个网站均为独立项目；完整源码只包含单文件爬虫和 requirements.txt。\n",
+        )
 
     write_text(
         site_dir / "部署文档" / "部署文档.md",
@@ -75,7 +116,7 @@ python "{site_name}_爬虫.py" --incremental --days 30 --to-db
 ## 抽样验证
 
 ```powershell
-python "{site_name}_爬虫.py" --days 30 --max-pages 1 --limit-per-category 10 --sample-dir "..\\验收样例"
+python "{site_name}_爬虫.py" --days 30 --max-pages 1 --limit-per-category 10 --sample-dir "..\\验收样例" --field-mapping-file "..\\字段映射表\\field_mapping.csv" --report-file "..\\验收报告\\acceptance_report.json"
 ```
 
 ## 输出说明
@@ -84,6 +125,7 @@ python "{site_name}_爬虫.py" --days 30 --max-pages 1 --limit-per-category 10 -
 - `字段映射表/field_mapping.csv`：字段映射。
 - `验收样例/*.csv`：少量样本，用于核对字段和 href，不是全量正式交付数据。
 - `验收报告/acceptance_report.json`：验收报告。
+- `运行状态/crawl_state.json`：成功入库或成功写出样本后生成的断点文件，不放进完整源码目录。
 """,
     )
     write_text(
@@ -116,7 +158,7 @@ $env:BID_SPIDER_PROXY = "http://127.0.0.1:7890"
 
 ## 断点状态文件
 
-默认状态文件：`state/crawl_state.json`。
+默认状态文件：`运行状态/crawl_state.json`，位于网站项目根目录；也可用 `--state-file` 覆盖。
 
 ## 栏目配置
 
@@ -134,6 +176,10 @@ $env:BID_SPIDER_PROXY = "http://127.0.0.1:7890"
 样本 CSV 只用于验收抽查，不作为正式全量数据交付物。
 """,
     )
+    write_text(
+        site_dir / "字段映射表" / "field_mapping.csv",
+        "字段,源网页/接口位置,说明\nwebname,站点配置 WEBNAME,网站名称\nhref,详情页路由,浏览器可打开详情页 URL\nmsg,详情正文,纯文本正文\nhtml,详情正文,安全清洗后的正文 HTML\npublish_time,列表或详情发布时间,YYYY-MM-DD\n",
+    )
 
 
 def main() -> None:
@@ -148,7 +194,10 @@ def main() -> None:
     template = Path(args.template)
     if not template.exists():
         raise SystemExit(f"模板不存在：{template}")
-    scaffold(root, args.site_name, template)
+    try:
+        scaffold(root, args.site_name, template)
+    except (FileExistsError, OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     print(f"已生成：{root / args.site_name}")
 
 
