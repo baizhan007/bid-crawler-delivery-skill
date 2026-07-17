@@ -1,13 +1,49 @@
+# Python environments and caches
+.venv/
+venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.har
+cookies*.json
+
+# Editors and operating systems
 .idea/
 .vscode/
-*.pyc
-*.pyo
+.DS_Store
+Thumbs.db
+
+# Logs and temporary output
 *.log
 *.tmp
+*.bak
+test-output/
+reports/
+artifacts/
+
+# Real/private captures; committed fixtures must be local simulations or sanitized
+fixtures/private/
+fixtures/real/
+fixtures/captured/
+
+# Build, packaging, and skill evaluation artifacts
 dist/
 build/
+*.egg-info/
 *.skill
+*.zip
 *-workspace/
 

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bidcrawler-factory"
+version = "1.0.0"
+description = "Offline-first tooling for building and validating procurement crawler deliveries."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+bidfactory = "bidfactory.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bidfactory*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

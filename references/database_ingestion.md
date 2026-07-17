@@ -61,6 +61,8 @@ BID_DB_TABLE
 
 `--db-table` 默认 `a_bidcollect_info`。
 
+表名会作为 SQL 标识符拼接，必须先用 `^[A-Za-z_][A-Za-z0-9_]*$` 校验。数据库名单独由连接参数选择，不接受在 `--db-table` 中传入表达式、反引号、空格或分号。
+
 ## 写入策略
 
 默认使用唯一键 `webname + href` 做 upsert：
@@ -112,3 +114,5 @@ python "网站_爬虫.py" --days 30 --max-pages 1 --limit-per-category 10 --to-d
 - `db_write_fields`
 - `href_browser_openable`
 - `sample_only`
+
+交付验收器应根据 `db_table`、唯一键和完整写入字段重新推导 `database_mode_supported`，不能只读取报告中预先写好的布尔值。

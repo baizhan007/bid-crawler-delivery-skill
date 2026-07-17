@@ -33,12 +33,16 @@
 - [ ] 支持 `--incremental`。
 - [ ] 支持 `--state-file`。
 - [ ] 支持 `--incremental-stop-seen`。
+- [ ] 连续旧记录计数按栏目独立维护，只停止当前栏目，不跳过后续栏目。
+- [ ] 默认断点位于网站项目的 `运行状态/crawl_state.json`，不写进 `完整源码`。
 - [ ] 支持代理 `BID_SPIDER_PROXY`。
 - [ ] 支持请求间隔 `BID_SPIDER_DELAY`。
 - [ ] 支持快速验证参数，如 `--limit`、`--limit-per-category`、`--max-pages`、`--sample-csv`。
 - [ ] 支持 `--to-db`。
 - [ ] 支持 `--db-host`、`--db-port`、`--db-user`、`--db-password`、`--db-name`、`--db-table`。
 - [ ] 支持 `--db-skip-existing`。
+- [ ] `--db-table` 只接受安全的 MySQL 标识符，不直接拼接任意字符串。
+- [ ] 支持 `--field-mapping-file` 和 `--report-file`，默认分别写入标准交付目录。
 - [ ] `pymysql` 只在入库模式启用时延迟导入。
 
 ## 数据库检查
@@ -62,6 +66,7 @@
 - [ ] `href` 不是缺参 hash 路由。
 - [ ] `href` 不是仅供程序调用的 API URL，除非客户明确接受。
 - [ ] `webname + href` 无重复。
+- [ ] URL 解析后同时具备 `http/https` scheme 和主机名，不能只检查字符串前缀。
 
 ## 样本 CSV 检查
 
@@ -91,7 +96,10 @@
 - [ ] 配置说明写清数据库、代理和请求间隔怎么改。
 - [ ] 字段映射说明能追溯每个字段来自哪里。
 - [ ] 验收报告 `overall_pass` 为 true，或明确解释失败原因。
+- [ ] 验收器从样本和数值指标重新推导质量标志，不直接相信报告内已有的 true/false。
+- [ ] HTML 清洗已移除 script/style/noscript、事件属性和危险 URL，只保留必要表格标签及安全属性。
 - [ ] 文档不再提旧包、旧模块、不用爬的网站或全量 CSV 默认交付。
+- [ ] 语法检查使用内存 `compile()` 或 `ast.parse()`，不会在交付目录生成 `__pycache__`。
 
 ## 清理检查
 

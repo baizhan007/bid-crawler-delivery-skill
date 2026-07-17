@@ -29,11 +29,15 @@
 │   └── 字段映射说明.md
 ├── 验收样例/
 │   └── sample_records.csv
-└── 验收报告/
-    └── acceptance_report.json
+├── 验收报告/
+│   └── acceptance_report.json
+└── 运行状态/
+    └── crawl_state.json  # 成功入库或成功写样本后生成
 ```
 
 `验收样例` 用于少量抽样核对，可以为空或按用户要求不生成；正式运行以数据库入库为准。
+
+`运行状态` 是运行时输出，初始交付包可以不包含；生成后也不得放进 `完整源码`。默认路径相对网站项目根目录稳定，不依赖启动命令的当前工作目录。
 
 ## 完整源码
 
@@ -44,6 +48,8 @@
 ├── 网站名称_爬虫.py
 └── requirements.txt
 ```
+
+验收器应严格拒绝这两个文件之外的任何文件或子目录，并使用内存语法检查，避免检查过程自身生成 `__pycache__`。
 
 默认不要放：
 
@@ -104,7 +110,9 @@ python "网站名称_爬虫.py" --days 30 --to-db
 - `BID_DB_TABLE`: 表名，默认 `a_bidcollect_info`。
 - `BID_SPIDER_DELAY`: 请求间隔。
 - `BID_SPIDER_PROXY`: 代理 IP。
-- `state/crawl_state.json`: 断点状态文件。
+- `--state-file`: 可覆盖断点路径；默认是网站项目根目录的 `运行状态/crawl_state.json`。
+- `--field-mapping-file`: 可覆盖字段映射路径；默认是 `字段映射表/field_mapping.csv`。
+- `--report-file`: 可覆盖验收报告路径；默认是 `验收报告/acceptance_report.json`。
 - 栏目参数在哪里改。
 - 日期范围参数怎么改。
 

@@ -11,10 +11,11 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
+from html.parser import HTMLParser
 from math import ceil
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -52,6 +53,18 @@ DB_FIELDS = [
     "identify_code",
     "etl_flag",
 ]
+
+MYSQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TABLE_TAGS = {"table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col"}
+TABLE_ATTRIBUTES = {
+    "table": {"summary"},
+    "colgroup": {"span"},
+    "col": {"span"},
+    "th": {"abbr", "colspan", "headers", "rowspan", "scope"},
+    "td": {"colspan", "headers", "rowspan"},
+}
+DROP_CONTENT_TAGS = {"script", "style", "noscript", "template"}
+LINE_BREAK_TAGS = {"br", "div", "p", "li", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6"}
 
 
 @dataclass
@@ -228,8 +241,10 @@ class ExampleBidSpider:
         max_pages: int | None = None,
         limit: int | None = None,
         limit_per_category: int | None = None,
+        state: CrawlState | None = None,
+        incremental_stop_seen: int = 3,
     ) -> Iterable[BidRecord]:
-        """采集全部目标栏目，并逐条返回标准记录。"""
+        """采集全部目标栏目；增量边界只停止当前栏目，不影响后续栏目。"""
 
         count = 0
         seen: set[tuple[str, str]] = set()
@@ -238,6 +253,8 @@ class ExampleBidSpider:
             self.stats.append(stat)
             page = 1
             category_count = 0
+            consecutive_seen = 0
+            stop_by_seen = False
             while True:
                 items, total_pages = self.fetch_page(source, page)
                 if not items:
@@ -256,6 +273,15 @@ class ExampleBidSpider:
                     if key in seen:
                         continue
                     seen.add(key)
+                    if state is not None and state.is_seen(record):
+                        consecutive_seen += 1
+                        if consecutive_seen >= incremental_stop_seen:
+                            stop_by_seen = True
+                            stat["incremental_boundary_reached"] = True
+                            stat["incremental_seen_count"] = consecutive_seen
+                            break
+                        continue
+                    consecutive_seen = 0
                     stat["fetched"] += 1
                     yield record
                     count += 1
@@ -265,6 +291,12 @@ class ExampleBidSpider:
                     if limit_per_category and category_count >= limit_per_category:
                         stop_by_date = True
                         break
+                if stop_by_seen:
+                    print(
+                        f"栏目 {source['name']} 已到上次采集位置，"
+                        f"连续遇到 {consecutive_seen} 条已采记录，继续下一个栏目。"
+                    )
+                    break
                 if stop_by_date or (max_pages and page >= max_pages) or page >= total_pages:
                     break
                 page += 1
@@ -357,9 +389,22 @@ def normalize_href(value: Any, base_url: str) -> str:
 
 
 def is_http_url(value: str) -> bool:
-    """判断链接是否为完整 http/https URL。"""
+    """判断链接是否为带主机名的完整 http/https URL。"""
 
-    return bool(re.match(r"^https?://", value or "", flags=re.I))
+    try:
+        parsed = urlsplit(value or "")
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def validate_mysql_identifier(value: str) -> str:
+    """校验 MySQL 表名，防止标识符拼接造成 SQL 注入。"""
+
+    value = clean_space(value)
+    if not MYSQL_IDENTIFIER_RE.fullmatch(value):
+        raise ValueError("数据库表名只能包含英文字母、数字和下划线，且不能以数字开头。")
+    return value
 
 
 def normalize_date(value: Any) -> str:
@@ -404,26 +449,79 @@ def text_from_html(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+class SafeTableHTMLParser(HTMLParser):
+    """仅输出正文文本和安全的表格标签、属性。"""
+
+    def __init__(self) -> None:
+        """初始化安全 HTML 输出缓冲区。"""
+
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.drop_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """处理开始标签，危险内容标签整段丢弃。"""
+
+        tag = tag.lower()
+        if tag in DROP_CONTENT_TAGS:
+            self.drop_depth += 1
+            return
+        if self.drop_depth:
+            return
+        if tag in TABLE_TAGS:
+            allowed = TABLE_ATTRIBUTES.get(tag, set())
+            safe_attrs = []
+            for name, value in attrs:
+                name = name.lower()
+                if name not in allowed or name.startswith("on") or value is None:
+                    continue
+                safe_attrs.append(f'{name}="{html_lib.escape(value, quote=True)}"')
+            suffix = f" {' '.join(safe_attrs)}" if safe_attrs else ""
+            self.parts.append(f"<{tag}{suffix}>")
+        elif tag in LINE_BREAK_TAGS:
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """处理自闭合标签。"""
+
+        if tag.lower() in DROP_CONTENT_TAGS:
+            return
+        self.handle_starttag(tag, attrs)
+        if tag.lower() in TABLE_TAGS and not self.drop_depth:
+            self.parts.append(f"</{tag.lower()}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        """处理结束标签，并维护危险内容跳过深度。"""
+
+        tag = tag.lower()
+        if tag in DROP_CONTENT_TAGS:
+            if self.drop_depth:
+                self.drop_depth -= 1
+            return
+        if self.drop_depth:
+            return
+        if tag in TABLE_TAGS:
+            self.parts.append(f"</{tag}>")
+        elif tag in LINE_BREAK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        """转义正文文本，避免实体解码后重新形成可执行标签。"""
+
+        if not self.drop_depth:
+            self.parts.append(html_lib.escape(data, quote=False))
+
+
 def keep_table_html(html: str) -> str:
-    """仅保留 table 相关标签，满足验收表 html 字段要求。"""
+    """清洗正文 HTML，只保留安全表格结构并转义普通文本。"""
 
-    placeholders: list[str] = []
-    table_re = re.compile(r"</?\s*(table|thead|tbody|tfoot|tr|th|td|caption|colgroup|col)\b[^>]*>", re.I)
-
-    def keep(match: re.Match) -> str:
-        """临时保护允许保留的 table 标签。"""
-
-        placeholders.append(match.group(0))
-        return f"@@TABLE_TAG_{len(placeholders) - 1}@@"
-
-    text = table_re.sub(keep, html or "")
-    text = re.sub(r"</(p|div|li|h\d|br)>", "\n", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html_lib.unescape(text)
-    for i, tag in enumerate(placeholders):
-        text = text.replace(f"@@TABLE_TAG_{i}@@", tag)
-    lines = [" ".join(line.split()) for line in text.splitlines()]
-    return "\n".join(line for line in lines if line).strip()
+    parser = SafeTableHTMLParser()
+    parser.feed(html or "")
+    parser.close()
+    text = "".join(parser.parts)
+    text = re.sub(r"[\t\f\v ]+", " ", text)
+    text = re.sub(r" *\n+ *", "\n", text)
+    return text.strip()
 
 
 def find_first(patterns: list[str], text: str) -> str:
@@ -453,6 +551,7 @@ class MysqlWriter:
     def __init__(self, args: argparse.Namespace) -> None:
         """初始化数据库连接和写入 SQL。"""
 
+        table_name = validate_mysql_identifier(args.db_table)
         if not args.db_user or not args.db_name:
             raise RuntimeError("启用 --to-db 时必须提供 --db-user 和 --db-name，或配置 BID_DB_USER/BID_DB_NAME。")
         try:
@@ -461,7 +560,7 @@ class MysqlWriter:
             raise RuntimeError("启用 --to-db 需要安装 pymysql：pip install pymysql") from exc
         placeholders = ", ".join(["%s"] * len(DB_FIELDS))
         columns = ", ".join(f"`{field}`" for field in DB_FIELDS)
-        table = f"`{args.db_table}`"
+        table = f"`{table_name}`"
         if args.db_skip_existing:
             self.sql = f"INSERT IGNORE INTO {table} ({columns}) VALUES ({placeholders})"
         else:
@@ -593,6 +692,24 @@ def build_report(records: list[BidRecord], source_stats: list[dict], start_date:
         field: round(sum(1 for r in records if getattr(r, field, "")) / total, 4) if total else 0
         for field in required
     }
+    href_bad = [
+        {"href": r.href, "title": r.title}
+        for r in records
+        if not is_http_url(r.href)
+    ][:50]
+    date_bad = []
+    bad_date_count = 0
+    for record in records:
+        try:
+            publish_date = datetime.strptime(record.publish_time, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            bad_date_count += 1
+            date_bad.append({"publish_time": record.publish_time, "title": record.title, "reason": "invalid_format"})
+            continue
+        if not (parse_date(start_date) <= publish_date <= parse_date(end_date)):
+            bad_date_count += 1
+            date_bad.append({"publish_time": record.publish_time, "title": record.title, "reason": "out_of_range"})
+    date_bad = date_bad[:50]
     coverage = []
     for stat in source_stats:
         expected = int(stat.get("expected") or 0)
@@ -613,7 +730,7 @@ def build_report(records: list[BidRecord], source_stats: list[dict], start_date:
         "records_ge_98_5_percent": all(item["passed"] for item in coverage),
         "required_fields_ge_99_5_percent": all(rate >= 0.995 for rate in rates.values()) if total else False,
         "no_duplicates": duplicate_records == 0,
-        "dates_in_range": all(start_date <= r.publish_time[:10] <= end_date for r in records if r.publish_time),
+        "dates_in_range": total > 0 and bad_date_count == 0,
         "links_traceable": not href_bad,
         "database_mode_supported": True,
     }
@@ -627,11 +744,17 @@ def build_report(records: list[BidRecord], source_stats: list[dict], start_date:
         "site_counts": {site: len(rows) for site, rows in by_site.items()},
         "href_quality": {
             "http_url_rate": round(sum(1 for r in records if is_http_url(r.href)) / total, 4) if total else 0,
+            "browser_openable_checked": False,
             "bad_samples": href_bad,
+        },
+        "date_quality": {
+            "valid_and_in_range_rate": round((total - bad_date_count) / total, 4) if total else 0,
+            "bad_count": bad_date_count,
+            "bad_samples": date_bad,
         },
         "database": {
             "database_mode_supported": True,
-            "db_table": args.db_table,
+            "db_table": validate_mysql_identifier(args.db_table),
             "db_unique_key": "webname + href",
             "db_write_fields": DB_FIELDS,
             "to_db_enabled_this_run": bool(args.to_db),
@@ -673,7 +796,9 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
-    parser.add_argument("--output-dir", default="验收输出")
+    parser.add_argument("--output-dir", default="", help="兼容旧调用：同时覆盖字段映射和验收报告目录")
+    parser.add_argument("--field-mapping-file", default="", help="字段映射 CSV 路径，默认写入站点项目的字段映射表目录")
+    parser.add_argument("--report-file", default="", help="验收报告 JSON 路径，默认写入站点项目的验收报告目录")
     parser.add_argument("--sample-csv", default="", help="写出单个样本 CSV，用于快速验收抽查")
     parser.add_argument("--sample-dir", default="", help="按栏目写出样本 CSV 的目录")
     parser.add_argument("--sample-size", type=int, default=20, help="每个样本 CSV 最多写出多少条")
@@ -681,7 +806,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--limit-per-category", type=int)
     parser.add_argument("--incremental", action="store_true")
-    parser.add_argument("--state-file", default="state/crawl_state.json")
+    parser.add_argument("--state-file", default="", help="断点文件，默认写入站点项目的运行状态目录")
     parser.add_argument("--incremental-stop-seen", type=int, default=3)
     parser.add_argument("--to-db", action="store_true", help="启用 MySQL 直接入库，写入 a_bidcollect_info 表")
     parser.add_argument("--db-host", default=os.getenv("BID_DB_HOST", "127.0.0.1"), help="数据库地址，默认读取 BID_DB_HOST")
@@ -693,24 +818,61 @@ def main() -> None:
     parser.add_argument("--db-skip-existing", action="store_true", help="遇到 webname + href 已存在时跳过，不覆盖更新")
     args = parser.parse_args()
 
+    if args.days < 1:
+        parser.error("--days 必须大于等于 1")
+    if args.incremental_stop_seen < 1:
+        parser.error("--incremental-stop-seen 必须大于等于 1")
+    if args.sample_size < 1:
+        parser.error("--sample-size 必须大于等于 1")
+    try:
+        validate_mysql_identifier(args.db_table)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     end = parse_date(args.end_date) if args.end_date else date.today()
     start = parse_date(args.start_date) if args.start_date else end - timedelta(days=args.days - 1)
-    state = CrawlState(Path(args.state_file))
+    if start > end:
+        parser.error("开始日期不能晚于结束日期")
+    project_root = Path(__file__).resolve().parent.parent
+    legacy_out_dir = Path(args.output_dir) if args.output_dir else None
+    field_mapping_file = (
+        Path(args.field_mapping_file)
+        if args.field_mapping_file
+        else (legacy_out_dir / "field_mapping.csv" if legacy_out_dir else project_root / "字段映射表" / "field_mapping.csv")
+    )
+    report_file = (
+        Path(args.report_file)
+        if args.report_file
+        else (legacy_out_dir / "acceptance_report.json" if legacy_out_dir else project_root / "验收报告" / "acceptance_report.json")
+    )
+    state_file = Path(args.state_file) if args.state_file else project_root / "运行状态" / "crawl_state.json"
+    state = CrawlState(state_file)
     crawl_start = state.incremental_start(start) if args.incremental else start
     spider = ExampleBidSpider()
     records: list[BidRecord] = []
-    seen_count = 0
-    for record in spider.crawl(crawl_start, end, max_pages=args.max_pages, limit=args.limit, limit_per_category=args.limit_per_category):
-        if args.incremental and state.is_seen(record):
-            seen_count += 1
-            if seen_count >= args.incremental_stop_seen:
-                print(f"已到上次采集位置，连续遇到 {seen_count} 条已采记录，停止翻页。")
-                break
-            continue
+    for record in spider.crawl(
+        crawl_start,
+        end,
+        max_pages=args.max_pages,
+        limit=args.limit,
+        limit_per_category=args.limit_per_category,
+        state=state if args.incremental else None,
+        incremental_stop_seen=args.incremental_stop_seen,
+    ):
         records.append(record)
     records = dedupe(records)
 
-    out_dir = Path(args.output_dir)
+    write_field_mapping(field_mapping_file)
+    report_stats = [] if args.incremental else spider.stats
+    report = build_report(records, report_stats, crawl_start.isoformat(), end.isoformat(), args)
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8-sig")
+    if records and not report["quality_flags"]["overall_pass"]:
+        raise SystemExit(f"严格验收未通过，请查看 {report_file}")
+    if not args.incremental and not records:
+        raise SystemExit(f"严格验收未通过：没有采集到记录，请查看 {report_file}")
+
+    persisted = False
     if args.to_db:
         db_writer = MysqlWriter(args)
         try:
@@ -718,25 +880,18 @@ def main() -> None:
         finally:
             db_writer.close()
         print(f"入库完成：{db_writer.count} 条 -> {args.db_table}")
-    if args.sample_csv:
+        persisted = bool(records)
+    if args.sample_csv and records:
         write_sample_csv(Path(args.sample_csv), records, args.sample_size)
-    if args.sample_dir:
+        persisted = True
+    if args.sample_dir and records:
         write_sample_csv_by_category(Path(args.sample_dir), records, [source["name"] for source in spider.sources()], args.sample_size)
-    write_field_mapping(out_dir / "field_mapping.csv")
-    report_stats = [] if args.incremental else spider.stats
-    report = build_report(records, report_stats, start.isoformat(), end.isoformat(), args)
-    (out_dir / "acceptance_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8-sig")
-    state.update(records)
-    state.save()
-    if not args.incremental and not report["quality_flags"]["overall_pass"]:
-        raise SystemExit("严格验收未通过，请查看 acceptance_report.json")
-    print(f"完成：{len(records)} 条；正式入库={'是' if args.to_db else '否'}；验收输出 -> {out_dir}")
+        persisted = True
+    if persisted:
+        state.update(records)
+        state.save()
+    print(f"完成：{len(records)} 条；正式入库={'是' if args.to_db else '否'}；验收报告 -> {report_file}")
 
 
 if __name__ == "__main__":
     main()
-    href_bad = [
-        {"href": r.href, "title": r.title}
-        for r in records
-        if not is_http_url(r.href)
-    ][:50]
